@@ -341,17 +341,18 @@ private:
 
     void loadFont() {
         const std::vector<std::string> paths = {
+            "font.ttf",
+            "assets/DejaVuSansMono.ttf",
             "C:/Windows/Fonts/consola.ttf",
             "C:/Windows/Fonts/lucon.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationMono-Regular.ttf",
-            "/System/Library/Fonts/Menlo.ttc"
+            "/usr/share/fonts/truetype/liberation2/LiberationMono-Regular.ttf"
         };
 
         for (const std::string& path : paths) {
             if (font.loadFromFile(path)) {
                 fontLoaded = true;
-                break;
+                return;
             }
         }
     }
@@ -612,45 +613,54 @@ private:
     }
 
     void fireLaser() {
-        if (laserCooldown > 0.0f || state != GameState::Playing) return;
+        if (laserCooldown > 0.0f || state != GameState::Playing || snake.empty()) return;
+
         float difficulty = std::min(0.62f, static_cast<float>(wave - 1) * 0.025f);
         float rapidMultiplier = rapidFireTimer > 0.0f ? 0.62f : 1.0f;
         laserCooldown = std::max(0.12f, (baseLaserCooldown + difficulty) * rapidMultiplier);
         laserTimer = laserCooldown;
-        Cell move = directionVector(direction);
-        Cell head = snake.front();
-        bool hitSomething = false;
 
-        for (int side = -1; side <= 1; side += 2) {
-            Cell lane{head.x - move.y * side, head.y + move.x * side};
-            int distance = 1;
-            while (insideBoard({lane.x + move.x * distance, lane.y + move.y * distance})) {
-                Cell target{lane.x + move.x * distance, lane.y + move.y * distance};
-                for (std::size_t i = 0; i < enemies.size(); ++i) {
-                    if (enemies[i].position == target) {
-                        enemies[i].health--;
-                        hitSomething = true;
-                        if (enemies[i].health <= 0) {
-                            int points = 35;
-                            if (enemies[i].type == EnemyType::Mantis) points = 65;
-                            if (enemies[i].type == EnemyType::Wasp) points = 55;
-                            if (enemies[i].type == EnemyType::Queen) points = 1200;
-                            addScore(points);
-                            kills++;
-                            killSound.play();
-                            enemies.erase(enemies.begin() + static_cast<long>(i));
-                        }
-                        distance = 1000;
-                        break;
-                    }
-                }
-                if (distance == 1000) break;
-                ++distance;
+        Cell head = snake.front();
+        int targetIndex = -1;
+        int bestDistance = GRID_WIDTH + GRID_HEIGHT + 1;
+
+        for (std::size_t i = 0; i < enemies.size(); ++i) {
+            const Cell enemy = enemies[i].position;
+            int distance = -1;
+
+            if (direction == Direction::Right && enemy.y == head.y && enemy.x > head.x) {
+                distance = enemy.x - head.x;
+            } else if (direction == Direction::Left && enemy.y == head.y && enemy.x < head.x) {
+                distance = head.x - enemy.x;
+            } else if (direction == Direction::Down && enemy.x == head.x && enemy.y > head.y) {
+                distance = enemy.y - head.y;
+            } else if (direction == Direction::Up && enemy.x == head.x && enemy.y < head.y) {
+                distance = head.y - enemy.y;
+            }
+
+            if (distance > 0 && distance < bestDistance) {
+                bestDistance = distance;
+                targetIndex = static_cast<int>(i);
             }
         }
-        if (!hitSomething) laserSound.setPitch(1.0f);
-    }
 
+        if (targetIndex >= 0) {
+            Enemy& target = enemies[static_cast<std::size_t>(targetIndex)];
+            target.health--;
+
+            if (target.health <= 0) {
+                int points = 35;
+                if (target.type == EnemyType::Mantis) points = 65;
+                if (target.type == EnemyType::Wasp) points = 55;
+                if (target.type == EnemyType::Queen) points = 1200;
+
+                addScore(points);
+                kills++;
+                killSound.play();
+                enemies.erase(enemies.begin() + targetIndex);
+            }
+        }
+    }
     void chooseUpgrade(int choice) {
         if (state != GameState::Upgrade) return;
         if (choice == 1) baseLaserCooldown = std::max(0.10f, baseLaserCooldown - 0.045f);
@@ -818,7 +828,7 @@ private:
 
     void drawText(const std::string& value, float x, float y, unsigned int size, sf::Color color) {
         if (!fontLoaded) return;
-        sf::Text text(value, font, size);
+        sf::Text text(sf::String::fromUtf8(value.begin(), value.end()), font, size);
         text.setPosition(x, y);
         text.setFillColor(color);
         window.draw(text);
@@ -827,7 +837,7 @@ private:
     void drawCenteredText(const std::string& value, float centerX, float y,
                           unsigned int size, sf::Color color) {
         if (!fontLoaded) return;
-        sf::Text text(value, font, size);
+        sf::Text text(sf::String::fromUtf8(value.begin(), value.end()), font, size);
         text.setFillColor(color);
         sf::FloatRect bounds = text.getLocalBounds();
         text.setOrigin(bounds.left + bounds.width / 2.0f, bounds.top);
