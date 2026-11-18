@@ -1,4 +1,5 @@
 #include <SFML/Graphics.hpp>
+#include <SFML/Audio.hpp>
 #include <algorithm>
 #include <cmath>
 #include <ctime>
@@ -10,11 +11,11 @@
 
 const int WINDOW_WIDTH = 1100;
 const int WINDOW_HEIGHT = 790;
-const int CELL_SIZE = 22;
+const int CELL_SIZE = 20;
 const int GRID_WIDTH = 34;
 const int GRID_HEIGHT = 23;
-const int BOARD_X = 176;
-const int BOARD_Y = 150;
+const int BOARD_X = 105;
+const int BOARD_Y = 158;
 const int BOARD_WIDTH = GRID_WIDTH * CELL_SIZE;
 const int BOARD_HEIGHT = GRID_HEIGHT * CELL_SIZE;
 const std::string GAME_TITLE = "LASER SNAKE: APPLE APOCALYPSE";
@@ -56,7 +57,8 @@ enum class GameState {
     Menu,
     Playing,
     Paused,
-    GameOver
+    GameOver,
+    Upgrade
 };
 
 struct Apple {
@@ -104,59 +106,74 @@ public:
         : window(gameWindow), randomEngine(static_cast<unsigned int>(std::time(nullptr))) {
         loadFont();
         loadHighScore();
+        makeSounds();
+        configureWindow();
     }
 
     void handleEvents() {
         sf::Event event{};
-
         while (window.pollEvent(event)) {
             if (event.type == sf::Event::Closed) {
                 saveHighScore();
                 window.close();
             }
-
+            if (event.type == sf::Event::Resized) updateView();
+            if (event.type == sf::Event::LostFocus) {
+                laserHeld = false;
+                laserSound.stop();
+            }
+            if (event.type == sf::Event::KeyReleased && event.key.code == sf::Keyboard::Space) {
+                laserHeld = false;
+                laserSound.stop();
+            }
             if (event.type != sf::Event::KeyPressed) continue;
-
             sf::Keyboard::Key key = event.key.code;
+
+            if (key == sf::Keyboard::F11 || (key == sf::Keyboard::Enter && event.key.alt)) {
+                toggleFullscreen();
+                continue;
+            }
 
             if (state == GameState::Menu) {
                 if (key == sf::Keyboard::Enter || key == sf::Keyboard::Space) startGame();
                 continue;
             }
-
+            if (state == GameState::Upgrade) {
+                if (key == sf::Keyboard::Num1) chooseUpgrade(1);
+                if (key == sf::Keyboard::Num2) chooseUpgrade(2);
+                if (key == sf::Keyboard::Num3) chooseUpgrade(3);
+                continue;
+            }
             if (state == GameState::GameOver) {
                 if (key == sf::Keyboard::Enter || key == sf::Keyboard::R) startGame();
                 if (key == sf::Keyboard::Escape) state = GameState::Menu;
                 continue;
             }
-
             if (state == GameState::Paused) {
-                if (key == sf::Keyboard::P || key == sf::Keyboard::Enter || key == sf::Keyboard::Escape) {
-                    state = GameState::Playing;
-                }
+                if (key == sf::Keyboard::P || key == sf::Keyboard::Enter || key == sf::Keyboard::Escape) state = GameState::Playing;
                 continue;
             }
-
             if (key == sf::Keyboard::P || key == sf::Keyboard::Escape) {
                 state = GameState::Paused;
+                laserHeld = false;
+                laserSound.stop();
             } else if (key == sf::Keyboard::R) {
+                laserHeld = false;
+                laserSound.stop();
                 startGame();
             } else if (key == sf::Keyboard::Space) {
-                fireLaser();
-            } else if (key == sf::Keyboard::W || key == sf::Keyboard::Up) {
-                requestTurn(Direction::Up);
-            } else if (key == sf::Keyboard::S || key == sf::Keyboard::Down) {
-                requestTurn(Direction::Down);
-            } else if (key == sf::Keyboard::A || key == sf::Keyboard::Left) {
-                requestTurn(Direction::Left);
-            } else if (key == sf::Keyboard::D || key == sf::Keyboard::Right) {
-                requestTurn(Direction::Right);
-            }
+                laserHeld = true;
+                if (laserSound.getStatus() != sf::Sound::Playing) laserSound.play();
+            } else if (key == sf::Keyboard::W || key == sf::Keyboard::Up) requestTurn(Direction::Up);
+            else if (key == sf::Keyboard::S || key == sf::Keyboard::Down) requestTurn(Direction::Down);
+            else if (key == sf::Keyboard::A || key == sf::Keyboard::Left) requestTurn(Direction::Left);
+            else if (key == sf::Keyboard::D || key == sf::Keyboard::Right) requestTurn(Direction::Right);
         }
     }
 
     void update(float deltaTime) {
         animationTime += deltaTime;
+        crtTime += deltaTime;
 
         if (state != GameState::Playing) return;
 
@@ -165,7 +182,7 @@ public:
         if (doubleScoreTimer > 0.0f) doubleScoreTimer -= deltaTime;
         if (laserTimer > 0.0f) laserTimer -= deltaTime;
         if (laserCooldown > 0.0f) laserCooldown -= deltaTime;
-        if (sf::Keyboard::isKeyPressed(sf::Keyboard::Space)) fireLaser();
+        if (laserHeld && laserCooldown <= 0.0f) fireLaser();
 
         snakeMoveTimer += deltaTime;
         enemySpawnTimer += deltaTime;
@@ -203,10 +220,12 @@ public:
 
         if (state == GameState::Menu) {
             drawMenu();
+            drawCrt();
         } else {
             drawGame();
 
             if (state == GameState::Paused) drawPause();
+            if (state == GameState::Upgrade) drawUpgrade();
             if (state == GameState::GameOver) drawGameOver();
         }
 
@@ -217,6 +236,13 @@ private:
     sf::RenderWindow& window;
     sf::Font font;
     bool fontLoaded = false;
+    sf::SoundBuffer eatBuffer, killBuffer, deathBuffer, laserBuffer;
+    sf::Sound eatSound, killSound, deathSound, laserSound;
+    bool fullscreen = false;
+    bool laserHeld = false;
+    int maxHealth = 3;
+    int upgradeChoiceCount = 0;
+    float crtTime = 0.0f;
     std::mt19937 randomEngine;
     GameState state = GameState::Menu;
 
@@ -246,8 +272,72 @@ private:
     float enemySpawnTimer = 0.0f;
     float powerupSpawnTimer = 0.0f;
     float laserCooldown = 0.0f;
+    float baseLaserCooldown = 0.22f;
     float laserTimer = 0.0f;
     float animationTime = 0.0f;
+
+    void configureWindow() {
+        window.setFramerateLimit(60);
+        window.setVerticalSyncEnabled(true);
+        updateView();
+    }
+
+    void updateView() {
+        float width = static_cast<float>(window.getSize().x);
+        float height = static_cast<float>(window.getSize().y);
+        if (width <= 0.0f || height <= 0.0f) return;
+        sf::View view(sf::FloatRect(0.0f, 0.0f, static_cast<float>(WINDOW_WIDTH), static_cast<float>(WINDOW_HEIGHT)));
+        float windowRatio = width / height;
+        float gameRatio = static_cast<float>(WINDOW_WIDTH) / WINDOW_HEIGHT;
+        if (windowRatio > gameRatio) {
+            float viewportWidth = gameRatio / windowRatio;
+            view.setViewport(sf::FloatRect((1.0f - viewportWidth) / 2.0f, 0.0f, viewportWidth, 1.0f));
+        } else {
+            float viewportHeight = windowRatio / gameRatio;
+            view.setViewport(sf::FloatRect(0.0f, (1.0f - viewportHeight) / 2.0f, 1.0f, viewportHeight));
+        }
+        window.setView(view);
+    }
+
+    void toggleFullscreen() {
+        fullscreen = !fullscreen;
+        if (fullscreen) window.create(sf::VideoMode::getDesktopMode(), GAME_TITLE, sf::Style::Fullscreen);
+        else window.create(sf::VideoMode(WINDOW_WIDTH, WINDOW_HEIGHT), GAME_TITLE, sf::Style::Titlebar | sf::Style::Close | sf::Style::Resize);
+        configureWindow();
+    }
+
+    void makeTone(sf::SoundBuffer& buffer, float frequency, float duration, bool laser) {
+        const unsigned int rate = 44100;
+        std::size_t count = static_cast<std::size_t>(rate * duration);
+        std::vector<sf::Int16> samples(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            float t = static_cast<float>(i) / rate;
+            float progress = static_cast<float>(i) / static_cast<float>(count);
+            float hz = laser ? frequency * (1.0f - 0.72f * progress) : frequency;
+            float wave = std::sin(6.2831853f * hz * t);
+            if (laser) wave += 0.35f * std::sin(6.2831853f * hz * 2.03f * t);
+            float envelope = std::min(1.0f, t * 35.0f) * std::max(0.0f, 1.0f - progress);
+            if (!laser) envelope *= std::min(1.0f, (1.0f - progress) * 8.0f);
+            samples[i] = static_cast<sf::Int16>(wave * envelope * 9000.0f);
+        }
+        buffer.loadFromSamples(samples.data(), samples.size(), 1, rate);
+    }
+
+    void makeSounds() {
+        makeTone(eatBuffer, 760.0f, 0.10f, false);
+        makeTone(killBuffer, 180.0f, 0.22f, true);
+        makeTone(deathBuffer, 95.0f, 0.65f, true);
+        makeTone(laserBuffer, 620.0f, 0.32f, true);
+        eatSound.setBuffer(eatBuffer);
+        killSound.setBuffer(killBuffer);
+        deathSound.setBuffer(deathBuffer);
+        laserSound.setBuffer(laserBuffer);
+        laserSound.setLoop(true);
+        laserSound.setVolume(24.0f);
+        eatSound.setVolume(45.0f);
+        killSound.setVolume(40.0f);
+        deathSound.setVolume(55.0f);
+    }
 
     void loadFont() {
         const std::vector<std::string> paths = {
@@ -285,6 +375,7 @@ private:
     void startGame() {
         score = 0;
         health = 3;
+        maxHealth = 3;
         wave = 1;
         kills = 0;
         applesEaten = 0;
@@ -297,7 +388,10 @@ private:
         enemySpawnTimer = 1.5f;
         powerupSpawnTimer = 0.0f;
         laserCooldown = 0.0f;
+        baseLaserCooldown = 0.22f;
         laserTimer = 0.0f;
+        laserHeld = false;
+        laserSound.stop();
         direction = Direction::Right;
         nextDirection = Direction::Right;
         turnPending = false;
@@ -447,6 +541,9 @@ private:
         for (std::size_t i = 0; i < snake.size(); ++i) {
             if (snake[i] == newHead && !(i == snake.size() - 1 && !eating)) {
                 state = GameState::GameOver;
+                laserHeld = false;
+                laserSound.stop();
+                deathSound.play();
                 saveHighScore();
                 return;
             }
@@ -455,6 +552,7 @@ private:
         snake.insert(snake.begin(), newHead);
 
         if (eating) {
+            eatSound.play();
             applesEaten++;
             addScore(apple.golden ? 500 : 100);
             if (applesEaten % 4 == 0) {
@@ -463,6 +561,12 @@ private:
             }
 
             spawnApple();
+            if (applesEaten > 0 && applesEaten % 10 == 0) {
+                state = GameState::Upgrade;
+                laserHeld = false;
+                laserSound.stop();
+                return;
+            }
         } else {
             snake.pop_back();
         }
@@ -497,6 +601,9 @@ private:
         invulnerabilityTimer = 1.5f;
 
         if (health <= 0) {
+            laserHeld = false;
+            laserSound.stop();
+            deathSound.play();
             state = GameState::GameOver;
             saveHighScore();
         } else {
@@ -506,44 +613,55 @@ private:
 
     void fireLaser() {
         if (laserCooldown > 0.0f || state != GameState::Playing) return;
-
-        laserCooldown = rapidFireTimer > 0.0f ? 0.19f : 0.48f;
-        laserTimer = 0.15f;
+        float difficulty = std::min(0.62f, static_cast<float>(wave - 1) * 0.025f);
+        float rapidMultiplier = rapidFireTimer > 0.0f ? 0.62f : 1.0f;
+        laserCooldown = std::max(0.12f, (baseLaserCooldown + difficulty) * rapidMultiplier);
+        laserTimer = laserCooldown;
         Cell move = directionVector(direction);
         Cell head = snake.front();
+        bool hitSomething = false;
 
-        for (std::size_t i = 0; i < enemies.size();) {
-            Cell enemyPosition = enemies[i].position;
-            int distance = 0;
-            bool inLine = false;
-
-            if (move.x != 0 && enemyPosition.y == head.y) {
-                distance = (enemyPosition.x - head.x) * move.x;
-                inLine = true;
-            }
-
-            if (move.y != 0 && enemyPosition.x == head.x) {
-                distance = (enemyPosition.y - head.y) * move.y;
-                inLine = true;
-            }
-
-            if (inLine && distance >= 1 && distance <= 10) {
-                enemies[i].health--;
-
-                if (enemies[i].health <= 0) {
-                    int points = 35;
-                    if (enemies[i].type == EnemyType::Mantis) points = 65;
-                    if (enemies[i].type == EnemyType::Wasp) points = 55;
-                    if (enemies[i].type == EnemyType::Queen) points = 1200;
-                    addScore(points);
-                    kills++;
-                    enemies.erase(enemies.begin() + static_cast<long>(i));
-                    continue;
+        for (int side = -1; side <= 1; side += 2) {
+            Cell lane{head.x - move.y * side, head.y + move.x * side};
+            int distance = 1;
+            while (insideBoard({lane.x + move.x * distance, lane.y + move.y * distance})) {
+                Cell target{lane.x + move.x * distance, lane.y + move.y * distance};
+                for (std::size_t i = 0; i < enemies.size(); ++i) {
+                    if (enemies[i].position == target) {
+                        enemies[i].health--;
+                        hitSomething = true;
+                        if (enemies[i].health <= 0) {
+                            int points = 35;
+                            if (enemies[i].type == EnemyType::Mantis) points = 65;
+                            if (enemies[i].type == EnemyType::Wasp) points = 55;
+                            if (enemies[i].type == EnemyType::Queen) points = 1200;
+                            addScore(points);
+                            kills++;
+                            killSound.play();
+                            enemies.erase(enemies.begin() + static_cast<long>(i));
+                        }
+                        distance = 1000;
+                        break;
+                    }
                 }
+                if (distance == 1000) break;
+                ++distance;
             }
-
-            ++i;
         }
+        if (!hitSomething) laserSound.setPitch(1.0f);
+    }
+
+    void chooseUpgrade(int choice) {
+        if (state != GameState::Upgrade) return;
+        if (choice == 1) baseLaserCooldown = std::max(0.10f, baseLaserCooldown - 0.045f);
+        if (choice == 2) health = std::min(maxHealth, health + 1);
+        if (choice == 3) {
+            maxHealth = std::min(6, maxHealth + 1);
+            health = std::min(maxHealth, health + 1);
+        }
+        upgradeChoiceCount++;
+        state = GameState::Playing;
+        laserCooldown = 0.0f;
     }
 
     void updateEnemies(float deltaTime) {
@@ -718,32 +836,24 @@ private:
     }
 
     void drawBackground() {
-        for (int i = 0; i < 18; ++i) {
-            float x = static_cast<float>((i * 83) % WINDOW_WIDTH);
-            float y = static_cast<float>((i * 137) % WINDOW_HEIGHT);
-            sf::CircleShape dot(1.5f);
-            dot.setPosition(x, y);
-            dot.setFillColor(sf::Color(35, 75, 70, 90));
-            window.draw(dot);
-        }
-
-        drawRect(0, 0, WINDOW_WIDTH, 3, sf::Color(25, 255, 125, 150));
+        window.clear(sf::Color(4, 8, 7));
+        drawRect(18, 18, WINDOW_WIDTH - 36, WINDOW_HEIGHT - 36, sf::Color(11, 17, 13), sf::Color(65, 92, 65), 3.0f);
+        drawRect(31, 31, WINDOW_WIDTH - 62, WINDOW_HEIGHT - 62, sf::Color(5, 10, 8), sf::Color(30, 48, 34), 1.0f);
+        drawRect(42, 42, WINDOW_WIDTH - 84, 3, sf::Color(105, 145, 92, 130));
+        drawRect(42, WINDOW_HEIGHT - 45, WINDOW_WIDTH - 84, 3, sf::Color(105, 145, 92, 100));
     }
 
     void drawMenu() {
-        drawCenteredText("ARCADE SURVIVAL PROTOCOL", WINDOW_WIDTH / 2.0f, 155, 17, sf::Color(75, 170, 135));
-        drawCenteredText("LASER SNAKE", WINDOW_WIDTH / 2.0f, 215, 58, sf::Color(80, 255, 145));
-        drawCenteredText("APPLE APOCALYPSE", WINDOW_WIDTH / 2.0f, 285, 31, sf::Color(220, 255, 225));
-        drawCenteredText("A tiny snake. A very big problem.", WINDOW_WIDTH / 2.0f, 342, 17, sf::Color(115, 150, 145));
-
+        drawCenteredText("ЛАЗЕРНАЯ ЗМЕЙКА", WINDOW_WIDTH / 2.0f, 145, 43, sf::Color(155, 220, 130));
+        drawCenteredText("ЯБЛОЧНЫЙ АПОКАЛИПСИС", WINDOW_WIDTH / 2.0f, 202, 25, sf::Color(205, 210, 160));
+        drawCenteredText("АРКАДНЫЙ АВТОМАТ  /  ВЫПУСК 1986", WINDOW_WIDTH / 2.0f, 270, 16, sf::Color(115, 145, 100));
         drawMenuSnake();
-
         float pulse = 0.65f + 0.35f * std::sin(animationTime * 3.0f);
-        sf::Color promptColor(85, 255, 150, static_cast<sf::Uint8>(120 + 135 * pulse));
-        drawCenteredText("PRESS ENTER TO START", WINDOW_WIDTH / 2.0f, 545, 23, promptColor);
-        drawCenteredText("WASD / ARROWS  MOVE     SPACE  LASER     P  PAUSE", WINDOW_WIDTH / 2.0f, 610, 15, sf::Color(125, 155, 150));
-        drawCenteredText("Collect apples. Survive the swarm. Do not become lunch.", WINDOW_WIDTH / 2.0f, 645, 14, sf::Color(80, 115, 110));
-        drawCenteredText("BEST SCORE: " + std::to_string(highScore), WINDOW_WIDTH / 2.0f, 700, 16, sf::Color(255, 205, 85));
+        drawCenteredText("НАЖМИ ENTER, ЧТОБЫ НАЧАТЬ", WINDOW_WIDTH / 2.0f, 535, 21,
+                         sf::Color(155, 220, 130, static_cast<sf::Uint8>(130 + 125 * pulse)));
+        drawCenteredText("WASD / СТРЕЛКИ - ДВИЖЕНИЕ     ПРОБЕЛ - ЛАЗЕР", WINDOW_WIDTH / 2.0f, 595, 15, sf::Color(155, 165, 130));
+        drawCenteredText("F11 - ПОЛНЫЙ ЭКРАН     P - ПАУЗА", WINDOW_WIDTH / 2.0f, 625, 15, sf::Color(155, 165, 130));
+        drawCenteredText("РЕКОРД: " + std::to_string(highScore), WINDOW_WIDTH / 2.0f, 690, 19, sf::Color(220, 190, 100));
     }
 
     void drawMenuSnake() {
@@ -782,25 +892,49 @@ private:
         drawEnemies();
         drawLasers();
         drawSnake();
+        drawSidePanel();
         drawFooter();
+        drawCrt();
     }
 
     void drawHud() {
-        drawText("LASER SNAKE", BOARD_X, 24, 25, sf::Color(90, 255, 150));
-        drawText("APPLE APOCALYPSE", BOARD_X + 205, 31, 15, sf::Color(110, 145, 135));
-        drawText("SCORE  " + std::to_string(score), BOARD_X, 83, 17, sf::Color(225, 245, 230));
-        drawText("BEST  " + std::to_string(highScore), BOARD_X + 190, 83, 17, sf::Color(255, 205, 90));
-        drawText("WAVE  " + std::to_string(wave), BOARD_X + 390, 83, 17, sf::Color(115, 225, 255));
-        drawText("KILLS  " + std::to_string(kills), BOARD_X + 515, 83, 17, sf::Color(230, 150, 255));
+        drawText("ЛАЗЕРНАЯ ЗМЕЙКА", 105, 68, 25, sf::Color(170, 220, 140));
+        drawText("ЯБЛОЧНЫЙ АПОКАЛИПСИС", 390, 75, 15, sf::Color(135, 155, 115));
+        drawText("СЧЁТ  " + std::to_string(score), 105, 112, 17, sf::Color(215, 220, 180));
+        drawText("РЕКОРД  " + std::to_string(highScore), 295, 112, 17, sf::Color(220, 190, 100));
+        drawText("ВОЛНА  " + std::to_string(wave), 515, 112, 17, sf::Color(160, 205, 145));
+        drawText("УБИЙСТВА  " + std::to_string(kills), 675, 112, 17, sf::Color(190, 170, 130));
+        drawRect(105, 140, 890, 2, sf::Color(65, 90, 60));
+    }
 
-        for (int i = 0; i < 3; ++i) {
-            sf::CircleShape heart(7.0f);
-            heart.setPosition(BOARD_X + 680 + i * 19.0f, 86.0f);
-            heart.setFillColor(i < health ? sf::Color(255, 85, 105) : sf::Color(65, 55, 65));
+    void drawSidePanel() {
+        int panelX = 810;
+        drawRect(panelX, BOARD_Y, 185, BOARD_HEIGHT, sf::Color(9, 15, 11), sf::Color(75, 100, 65), 2.0f);
+        drawText("СОСТОЯНИЕ", panelX + 15, 174, 15, sf::Color(160, 200, 130));
+        drawText("ЖИЗНИ", panelX + 15, 215, 13, sf::Color(130, 150, 110));
+        for (int i = 0; i < maxHealth; ++i) {
+            sf::RectangleShape heart({15.0f, 15.0f});
+            heart.setPosition(static_cast<float>(panelX + 16 + i * 23), 241.0f);
+            heart.setFillColor(i < health ? sf::Color(190, 85, 75) : sf::Color(55, 55, 45));
             window.draw(heart);
         }
-
-        drawRect(BOARD_X, 119, BOARD_WIDTH, 1, sf::Color(35, 75, 65));
+        drawText("ЯБЛОКИ", panelX + 15, 282, 13, sf::Color(130, 150, 110));
+        drawText(std::to_string(applesEaten) + " / 10", panelX + 15, 304, 20, sf::Color(220, 195, 115));
+        drawText("ЗАРЯД ЛАЗЕРА", panelX + 15, 356, 13, sf::Color(130, 150, 110));
+        float full = std::max(0.01f, baseLaserCooldown + std::min(0.62f, static_cast<float>(wave - 1) * 0.025f));
+        float charge = std::clamp(1.0f - laserCooldown / full, 0.0f, 1.0f);
+        drawRect(panelX + 15, 382, 150, 12, sf::Color(35, 45, 32), sf::Color(85, 110, 70), 1.0f);
+        drawRect(panelX + 17, 384, 146 * charge, 8, sf::Color(145, 220, 105));
+        drawText(laserCooldown <= 0.0f ? "ГОТОВ" : "ЗАРЯДКА", panelX + 15, 405, 12,
+                 laserCooldown <= 0.0f ? sf::Color(170, 220, 130) : sf::Color(170, 165, 115));
+        drawText("УСИЛЕНИЯ", panelX + 15, 454, 13, sf::Color(130, 150, 110));
+        int y = 480;
+        if (shieldActive) { drawText("ЩИТ", panelX + 15, static_cast<float>(y), 14, sf::Color(120, 190, 210)); y += 24; }
+        if (rapidFireTimer > 0.0f) { drawText("БЫСТРЫЙ ЛАЗЕР", panelX + 15, static_cast<float>(y), 12, sf::Color(190, 145, 220)); y += 24; }
+        if (doubleScoreTimer > 0.0f) { drawText("ОЧКИ x2", panelX + 15, static_cast<float>(y), 13, sf::Color(220, 190, 100)); }
+        drawText("ВРАГИ", panelX + 15, 570, 13, sf::Color(130, 150, 110));
+        drawText("ЖУК  /  БОГОМОЛ", panelX + 15, 594, 11, sf::Color(180, 165, 125));
+        drawText("ОСА  /  КОРОЛЕВА", panelX + 15, 614, 11, sf::Color(180, 165, 125));
     }
 
     void drawBoard() {
@@ -906,7 +1040,7 @@ private:
     }
 
     void drawLasers() {
-        if (laserTimer <= 0.0f || snake.empty()) return;
+        if (!laserHeld || snake.empty()) return;
 
         Cell move = directionVector(direction);
         sf::Vector2f center = cellCenter(snake.front());
@@ -924,8 +1058,8 @@ private:
 
         for (int sign : {-1, 1}) {
             sf::Vector2f start(
-                center.x + move.x * 8.0f + side.x * 5.0f * sign,
-                center.y + move.y * 8.0f + side.y * 5.0f * sign
+                center.x + move.x * 8.0f - move.y * 5.0f * sign,
+                center.y + move.y * 8.0f + move.x * 5.0f * sign
             );
 
             sf::RectangleShape glow({CELL_SIZE * range, 7.0f});
@@ -1044,46 +1178,66 @@ private:
     }
 
     void drawFooter() {
-        drawRect(BOARD_X, 681, BOARD_WIDTH, 1, sf::Color(35, 75, 65));
-        drawText("WASD / ARROWS  MOVE", BOARD_X, 699, 13, sf::Color(120, 160, 145));
-        drawText("SPACE  LASER", BOARD_X + 220, 699, 13, sf::Color(120, 160, 145));
-        drawText("P  PAUSE", BOARD_X + 375, 699, 13, sf::Color(120, 160, 145));
-        drawText("R  RESTART", BOARD_X + 490, 699, 13, sf::Color(120, 160, 145));
+        drawRect(105, 640, 890, 2, sf::Color(65, 90, 60));
+        drawText("WASD / СТРЕЛКИ  ДВИЖЕНИЕ", 105, 658, 13, sf::Color(145, 160, 120));
+        drawText("ПРОБЕЛ  ЛАЗЕР", 390, 658, 13, sf::Color(145, 160, 120));
+        drawText("P  ПАУЗА", 575, 658, 13, sf::Color(145, 160, 120));
+        drawText("F11  ЭКРАН", 710, 658, 13, sf::Color(145, 160, 120));
+        drawText("R  ЗАНОВО", 850, 658, 13, sf::Color(145, 160, 120));
+        drawText("СОБЕРИ 10 ЯБЛОК - ПОЛУЧИ УЛУЧШЕНИЕ", 105, 688, 14, sf::Color(185, 175, 125));
+    }
 
-        std::string status;
-        if (shieldActive) status += "SHIELD  ";
-        if (rapidFireTimer > 0.0f) status += "RAPID FIRE " + std::to_string(static_cast<int>(rapidFireTimer + 1)) + "s  ";
-        if (doubleScoreTimer > 0.0f) status += "x2 SCORE " + std::to_string(static_cast<int>(doubleScoreTimer + 1)) + "s";
-        if (!status.empty()) drawText(status, BOARD_X, 730, 13, sf::Color(100, 230, 255));
+    void drawCrt() {
+        for (int y = 0; y < WINDOW_HEIGHT; y += 4) drawRect(0, static_cast<float>(y), WINDOW_WIDTH, 1, sf::Color(0, 0, 0, 38));
+        float flicker = 0.025f + 0.015f * std::sin(crtTime * 37.0f);
+        drawRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, sf::Color(100, 140, 90, static_cast<sf::Uint8>(flicker * 255.0f)));
+        for (int i = 0; i < 26; ++i) {
+            int x = (i * 173 + static_cast<int>(crtTime * 19.0f)) % WINDOW_WIDTH;
+            int y = (i * 97 + static_cast<int>(crtTime * 31.0f)) % WINDOW_HEIGHT;
+            drawRect(static_cast<float>(x), static_cast<float>(y), 2, 2, sf::Color(170, 205, 140, 35));
+        }
     }
 
     void drawPause() {
-        drawRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, sf::Color(0, 0, 0, 175));
-        drawCenteredText("PAUSED", WINDOW_WIDTH / 2.0f, 300, 48, sf::Color(100, 255, 155));
-        drawCenteredText("Press P or ENTER to continue", WINDOW_WIDTH / 2.0f, 380, 18, sf::Color(220, 240, 225));
+        drawRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, sf::Color(0, 0, 0, 190));
+        drawCenteredText("ПАУЗА", WINDOW_WIDTH / 2.0f, 300, 48, sf::Color(170, 220, 140));
+        drawCenteredText("НАЖМИ P, ЧТОБЫ ПРОДОЛЖИТЬ", WINDOW_WIDTH / 2.0f, 380, 18, sf::Color(205, 210, 175));
+    }
+
+    void drawUpgrade() {
+        drawRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, sf::Color(0, 0, 0, 220));
+        drawRect(230, 170, 640, 440, sf::Color(10, 19, 12), sf::Color(130, 160, 95), 3.0f);
+        drawCenteredText("ПЕРЕРЫВ НА ОБСЛУЖИВАНИЕ", WINDOW_WIDTH / 2.0f, 215, 26, sf::Color(185, 220, 145));
+        drawCenteredText("ВЫБЕРИ ОДНО УЛУЧШЕНИЕ", WINDOW_WIDTH / 2.0f, 265, 17, sf::Color(165, 175, 135));
+        drawText("1   УСКОРИТЬ ЗАРЯДКУ ЛАЗЕРА", 300, 335, 19, sf::Color(190, 220, 145));
+        drawText("    Перезарядка станет короче", 300, 365, 14, sf::Color(145, 165, 125));
+        drawText("2   ВОССТАНОВИТЬ 1 ЖИЗНЬ", 300, 425, 19, sf::Color(215, 160, 135));
+        drawText("    Вернуть потерянное здоровье", 300, 455, 14, sf::Color(145, 165, 125));
+        drawText("3   УВЕЛИЧИТЬ ЗАПАС ЖИЗНЕЙ", 300, 515, 19, sf::Color(160, 195, 220));
+        drawText("    +1 к максимуму и +1 к здоровью", 300, 545, 14, sf::Color(145, 165, 125));
+        drawCenteredText("НАЖМИ 1, 2 ИЛИ 3", WINDOW_WIDTH / 2.0f, 575, 15, sf::Color(220, 195, 115));
+        drawCrt();
     }
 
     void drawGameOver() {
-        drawRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, sf::Color(0, 0, 0, 190));
-        drawCenteredText("GAME OVER", WINDOW_WIDTH / 2.0f, 245, 52, sf::Color(255, 85, 105));
-        drawCenteredText("The apple apocalypse wins this round.", WINDOW_WIDTH / 2.0f, 325, 18, sf::Color(220, 220, 220));
-        drawCenteredText("SCORE  " + std::to_string(score), WINDOW_WIDTH / 2.0f, 390, 25, sf::Color(100, 255, 155));
-        drawCenteredText("KILLS  " + std::to_string(kills) + "      WAVE  " + std::to_string(wave),
-                         WINDOW_WIDTH / 2.0f, 435, 18, sf::Color(170, 200, 190));
-        drawCenteredText("Press ENTER or R to play again", WINDOW_WIDTH / 2.0f, 520, 18, sf::Color(255, 215, 100));
-        drawCenteredText("Press ESC to return to menu", WINDOW_WIDTH / 2.0f, 555, 15, sf::Color(130, 155, 145));
+        drawRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, sf::Color(0, 0, 0, 205));
+        drawCenteredText("ИГРА ОКОНЧЕНА", WINDOW_WIDTH / 2.0f, 245, 46, sf::Color(205, 105, 85));
+        drawCenteredText("АПОКАЛИПСИС ПОБЕДИЛ В ЭТОТ РАЗ", WINDOW_WIDTH / 2.0f, 325, 17, sf::Color(195, 185, 150));
+        drawCenteredText("СЧЁТ  " + std::to_string(score), WINDOW_WIDTH / 2.0f, 390, 25, sf::Color(170, 220, 140));
+        drawCenteredText("УБИЙСТВА  " + std::to_string(kills) + "     ВОЛНА  " + std::to_string(wave), WINDOW_WIDTH / 2.0f, 435, 18, sf::Color(170, 180, 145));
+        drawCenteredText("ENTER ИЛИ R - ЕЩЁ РАЗ", WINDOW_WIDTH / 2.0f, 520, 18, sf::Color(220, 195, 115));
+        drawCenteredText("ESC - В ГЛАВНОЕ МЕНЮ", WINDOW_WIDTH / 2.0f, 555, 15, sf::Color(145, 160, 125));
+        drawCrt();
     }
+
 };
 
 int main() {
     sf::RenderWindow window(
         sf::VideoMode(WINDOW_WIDTH, WINDOW_HEIGHT),
         GAME_TITLE,
-        sf::Style::Titlebar | sf::Style::Close
+        sf::Style::Titlebar | sf::Style::Close | sf::Style::Resize
     );
-
-    window.setFramerateLimit(60);
-    window.setVerticalSyncEnabled(true);
 
     Game game(window);
     sf::Clock clock;

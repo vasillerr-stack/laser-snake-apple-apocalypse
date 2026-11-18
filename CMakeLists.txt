@@ -7,7 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(FetchContent)
 
-set(SFML_BUILD_AUDIO OFF CACHE BOOL "" FORCE)
+set(SFML_BUILD_AUDIO ON CACHE BOOL "" FORCE)
 set(SFML_BUILD_NETWORK OFF CACHE BOOL "" FORCE)
 set(SFML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SFML_BUILD_TEST_SUITE OFF CACHE BOOL "" FORCE)
@@ -23,7 +23,7 @@ FetchContent_MakeAvailable(SFML)
 
 add_executable(LASER_SNAKE main.cpp)
 set_target_properties(LASER_SNAKE PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-target_link_libraries(LASER_SNAKE PRIVATE sfml-graphics sfml-window sfml-system)
+target_link_libraries(LASER_SNAKE PRIVATE sfml-graphics sfml-window sfml-system sfml-audio)
 
 if(WIN32)
     add_custom_command(TARGET LASER_SNAKE POST_BUILD
