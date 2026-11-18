@@ -10,7 +10,7 @@ jobs:
 
     steps:
       - name: Get source code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up MSYS2
         uses: msys2/setup-msys2@v2
@@ -35,7 +35,7 @@ jobs:
         run: cmake --build build --config Release --parallel 2
 
       - name: Upload Windows game
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: LASER-SNAKE-Windows
           path: |
